@@ -1,0 +1,62 @@
+# Render Blueprint for the public demo's API. The SPA is served by Vercel and the database by
+# Neon, so this file describes one service.
+#
+#   Render dashboard -> New -> Blueprint -> point it at this repository
+#
+# Everything marked `sync: false` is set once in the dashboard and never committed.
+services:
+  - type: web
+    name: devflow-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+
+    # GitHub Actions owns deployment, so that the tests gate it. Deploying on push as well would
+    # ship whatever was committed, passing or not. Actions triggers this through a deploy hook.
+    autoDeploy: false
+
+    # Readiness, not liveness: it reports the database too, so a container with no working
+    # connection pool is never marked live.
+    healthCheckPath: /actuator/health/readiness
+
+    envVars:
+      # prod is the real configuration; demo adds nothing but the seed location.
+      - key: SPRING_PROFILES_ACTIVE
+        value: prod,demo
+
+      # Neon, from its dashboard. The JDBC form of the connection string, and sslmode is not
+      # optional there:
+      #   jdbc:postgresql://ep-xxx.eu-central-1.aws.neon.tech/devflow?sslmode=require
+      - key: SPRING_DATASOURCE_URL
+        sync: false
+      - key: SPRING_DATASOURCE_USERNAME
+        sync: false
+      - key: SPRING_DATASOURCE_PASSWORD
+        sync: false
+
+      # Generate with: openssl rand -base64 48
+      #
+      # Deliberately not `generateValue: true`. The application base64-decodes this before
+      # falling back to raw bytes, so a 32-character random string that happens to be valid
+      # base64 decodes to 24 bytes and the app refuses to start.
+      - key: DEVFLOW_JWT_SECRET
+        sync: false
+
+      # The Vercel origin. Requests arrive through Vercel's rewrite rather than cross-origin, so
+      # this is belt and braces.
+      - key: DEVFLOW_CORS_ALLOWED_ORIGINS
+        sync: false
+
+      # Neon's free tier suspends when idle and every connection crosses the network, so a large
+      # idle pool costs more than it saves.
+      - key: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
+        value: "5"
+      - key: SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE
+        value: "1"
+
+      # The free instance is 512 MB. The image defaults to 75 percent, which leaves too little
+      # for metaspace and the JVM's own native memory at this size.
+      - key: JAVA_TOOL_OPTIONS
+        value: "-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"

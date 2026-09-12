@@ -1,0 +1,75 @@
+name: Keep the demo warm
+
+# Render's free tier stops a service after 15 minutes without traffic, and a cold JVM plus
+# Flyway is most of a minute before the first page answers.
+#
+# THIS IS THE BACKSTOP, NOT THE MECHANISM. An external pinger keeps the demo warm; this runs
+# alongside it and costs nothing when the service is already up.
+#
+# Two things were measured here, and the order matters.
+#
+# The first is why the demo was cold despite this workflow reporting success: DEMO_API_URL had
+# been created as a *secret*, while the step below reads `vars.DEMO_API_URL`. Those are separate
+# namespaces, so the variable was empty, the guard took the early exit, and the job went green
+# without sending a single request. That guard now fails instead, which is the only reason this
+# would ever be noticed.
+#
+# The second is that the schedule is genuinely unreliable even when configured correctly. Over
+# one 7.5 hour window GitHub started this workflow three times, with gaps of 120 and 319
+# minutes, against the 10 minutes the cron asks for. A service that stops after 15 minutes idle
+# is down for most of a gap like that, which is why the external pinger is the mechanism and
+# this is only the backstop.
+#
+# Also worth knowing: GitHub disables scheduled workflows on a repository with no commits for
+# 60 days, which a finished portfolio project reaches quickly. Re-enable it from the Actions tab.
+#
+# Render's free allowance is 750 instance-hours a month and a month is about 730, so keeping a
+# single service up continuously fits.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: keep-demo-warm
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake the API
+        env:
+          DEMO_API_URL: ${{ vars.DEMO_API_URL }}
+        run: |
+          # Failing rather than exiting 0: a silent no-op here is a green tick on a workflow
+          # that is not warming anything, and the first sign of it is a visitor waiting out a
+          # cold start. An unset variable is a misconfiguration, so it is reported as one.
+          if [ -z "$DEMO_API_URL" ]; then
+            echo "DEMO_API_URL repository variable is not set, so nothing was pinged." >&2
+            echo "Set it under Settings -> Secrets and variables -> Actions -> Variables." >&2
+            exit 1
+          fi
+
+          # A cold start has to boot the JVM and run Flyway, so the first request is slow rather
+          # than failing. --max-time has to be generous enough to cover that, or the ping gives
+          # up and the service is left to stop again.
+          for attempt in 1 2 3; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 120 \
+              "${DEMO_API_URL%/}/actuator/health/readiness" || echo 000)
+
+            if [ "$code" = "200" ]; then
+              echo "ready (attempt $attempt)"
+              exit 0
+            fi
+
+            echo "attempt $attempt got $code"
+            sleep 20
+          done
+
+          echo "the demo API did not become ready" >&2
+          exit 1

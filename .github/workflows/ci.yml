@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  # Deliberately no push trigger. "Deploy the demo" calls this workflow as its gate, so a push
+  # to main already runs it. Having both meant two runs on one push sharing the concurrency
+  # group below, and cancel-in-progress cancelled whichever registered first. It was a coin
+  # toss: sometimes the standalone run died, sometimes the deploy's gate did, and when it was
+  # the gate the deploy skipped every job after it and shipped nothing, while the green tick on
+  # the standalone CI run made the push look fine.
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # clean, because an incremental verify can pick up class files another build left in the
+      # same output directory. The runner has a Docker daemon, which Testcontainers needs.
+      - name: Verify
+        run: mvn -B -f backend/pom.xml clean verify
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: backend/target/*-reports/
+          retention-days: 7
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+
+  infrastructure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Both environments declare the same two providers, and the AWS one is a few hundred
+      # megabytes. Without a shared cache each `init` fetches its own copy, so the job downloads
+      # it twice per run and reaches the registry more often than it has any reason to.
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tofu-plugin-cache
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.12.6
+
+      - name: Cache the provider plugins
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          # The version constraints live in the .tf files, so a change to one is what should
+          # invalidate the cache. The restore-key still hands back the previous cache on a miss,
+          # which leaves every unchanged provider already on disk.
+          key: tofu-plugins-${{ runner.os }}-${{ hashFiles('infrastructure/aws/terraform/**/*.tf') }}
+          restore-keys: tofu-plugins-${{ runner.os }}-
+
+      - name: Format
+        run: tofu -chdir=infrastructure/aws/terraform fmt -recursive -check
+
+      # -backend=false, because validating the configuration should not need credentials or a
+      # state bucket.
+      - name: Validate
+        run: |
+          # `init` talks to registry.opentofu.org, which occasionally drops a connection
+          # mid-resolution: "server sent GOAWAY", and the run fails having found nothing wrong
+          # with the configuration. A red tick that says nothing about the commit is worse than
+          # useless, so a network failure gets two more tries before it is called a failure. Only
+          # init is retried; `validate` is local and a failure there is real.
+          init() {
+            local dir="$1" attempt
+            for attempt in 1 2 3; do
+              if tofu -chdir="$dir" init -backend=false -input=false; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "::warning::tofu init failed for $dir (attempt $attempt), retrying" >&2
+                sleep $((attempt * 10))
+              fi
+            done
+            echo "tofu init failed for $dir after 3 attempts" >&2
+            return 1
+          }
+
+          for env in staging production; do
+            dir="infrastructure/aws/terraform/envs/$env"
+            init "$dir"
+            tofu -chdir="$dir" validate
+          done
+
+  scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      # The deployment scripts have no test suite; shellcheck is what stands in for one.
+      - name: Shellcheck
+        run: shellcheck ci/scripts/*.sh

@@ -1,0 +1,177 @@
+name: Deploy the demo
+
+# Vercel's Git integration and Render's auto-deploy are both switched off, in vercel.json and
+# render.yaml. Otherwise each push deploys twice and nothing waits for the tests, which defeats
+# the point of having them.
+#
+# Because those integrations are off, this workflow is the only thing that ships anything. So a
+# missing secret is a failure, not a step to skip: every guard below exits non-zero. They used
+# to exit 0, and the result was a run where every job was green and the site had not changed
+# for half a day, which is a worse outcome than a red tick on the push that caused it.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-demo
+  cancel-in-progress: false
+
+jobs:
+  # A deploy that has not passed the tests is not a deploy, it is a gamble.
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  api:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Trigger the Render deploy
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL is not set, so the API was not deployed." >&2
+            echo "Set it under Settings -> Secrets and variables -> Actions -> Secrets." >&2
+            exit 1
+          fi
+          curl -fsS -X POST "$HOOK" -o /dev/null
+          echo "Render deploy triggered"
+
+      # Render builds the image, migrates and reseeds, which takes a few minutes. The readiness
+      # probe reports the database too, so this waits for a genuinely usable API rather than an
+      # open port.
+      - name: Wait for the API
+        env:
+          DEMO_API_URL: ${{ vars.DEMO_API_URL }}
+        run: |
+          if [ -z "$DEMO_API_URL" ]; then
+            echo "DEMO_API_URL is not set, so the deploy was never verified." >&2
+            echo "Set it under Settings -> Secrets and variables -> Actions -> Variables." >&2
+            exit 1
+          fi
+
+          for attempt in $(seq 1 40); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
+              "${DEMO_API_URL%/}/actuator/health/readiness" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "API ready after $attempt attempt(s)"
+              exit 0
+            fi
+            echo "attempt $attempt: $code"
+            sleep 15
+          done
+
+          echo "the API did not become ready" >&2
+          exit 1
+
+  # Every vercel command runs from the repository root, not from frontend/. The project's own
+  # Root Directory setting is already "frontend", and the CLI applies it relative to where it is
+  # invoked: from inside frontend/ it looks for frontend/frontend, finds no package.json, skips
+  # the install and then runs the Vite default `vite build` with nothing on PATH. The error that
+  # produces is "vite: not found", which reads like a missing dependency rather than a wrong
+  # directory. Vercel installs the dependencies itself once it can find them.
+  #
+  # This is also why the demo flag lives in vercel.json's `buildCommand` and not in its
+  # `build.env`. On this path the build runs here rather than on Vercel, and its environment
+  # comes from what `vercel pull` wrote into .vercel/, so `build.env` is never applied: the
+  # routes from the same file took effect while VITE_DEMO_MODE silently did not, so the demo went
+  # live with no credentials on its login page. The smoke job fails on that now.
+  web:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Deploy to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          # All three, not just the token. With the ids empty the CLI still authenticates and
+          # then fails on `pull` with "Could not retrieve Project Settings", which reads like a
+          # broken link rather than a missing secret and sends you looking in the wrong place.
+          missing=
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "The SPA was not deployed. Missing repository secret(s):$missing" >&2
+            echo "Set them under Settings -> Secrets and variables -> Actions -> Secrets." >&2
+            echo "Both ids are in .vercel/repo.json after 'vercel link' at the repo root:" >&2
+            echo "  orgId -> VERCEL_ORG_ID, projectId -> VERCEL_PROJECT_ID" >&2
+            exit 1
+          fi
+
+          npm i -g vercel@latest
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+          vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+
+  smoke:
+    needs: [api, web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the deployed environment from outside
+        env:
+          DEMO_URL: ${{ vars.DEMO_URL }}
+          # This deployment is the public demo, so a missing demo account or a login page built
+          # without the credentials is a failed deploy, not a variation.
+          SMOKE_EXPECT_DEMO: 'true'
+        run: |
+          if [ -z "$DEMO_URL" ]; then
+            echo "DEMO_URL is not set, so nothing was smoke-tested." >&2
+            echo "Set it under Settings -> Secrets and variables -> Actions -> Variables." >&2
+            exit 1
+          fi
+          ci/scripts/smoke-test.sh "$DEMO_URL"
+
+  # DevFlow recording its own releases is the whole point of the deployment API, but it needs an
+  # API key, and the demo wipes its seeded rows on every restart along with any key issued
+  # through the UI. So this runs only when pointed at a DevFlow that persists, and is skipped
+  # otherwise rather than failing the deploy.
+  record:
+    needs: smoke
+    if: ${{ vars.DEVFLOW_API_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      DEVFLOW_API_URL: ${{ vars.DEVFLOW_API_URL }}
+      DEVFLOW_PROJECT_ID: ${{ vars.DEVFLOW_PROJECT_ID }}
+      DEVFLOW_API_KEY: ${{ secrets.DEVFLOW_API_KEY }}
+      DEPLOY_ENVIRONMENT: ${{ vars.DEVFLOW_ENVIRONMENT || 'staging' }}
+      BRANCH_NAME: ${{ github.ref_name }}
+      GIT_COMMIT: ${{ github.sha }}
+      BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Record the release in DevFlow
+        run: |
+          export RELEASE_VERSION="${{ github.run_number }}-$(echo "$GIT_COMMIT" | cut -c1-7)"
+          export COMMIT_MESSAGE="$(git log -1 --pretty=%s)"
+
+          id=$(ci/scripts/devflow-deployment.sh create)
+          echo "deployment $id"
+
+          # Blocks here if the target environment is gated, until a project administrator
+          # approves it in DevFlow.
+          ci/scripts/devflow-deployment.sh start "$id"
+          ci/scripts/devflow-deployment.sh finish "$id" SUCCESS
