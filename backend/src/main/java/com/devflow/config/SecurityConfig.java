@@ -88,9 +88,21 @@ public class SecurityConfig {
         return new ProviderManager(provider);
     }
 
+    /**
+     * Cost 10, the Spring Security default and the OWASP floor, rather than a higher factor.
+     * The public demo runs on a shared-CPU free instance where each doubling is felt directly:
+     * at 12 a single verification measured 1.9 seconds there, against 145 ms for a token
+     * refresh that does the same database and JWT work without hashing. That cost lands on the
+     * first thing a visitor does, and on failed attempts too, since the provider hashes a dummy
+     * password when no user matches so that timing cannot be used to enumerate accounts.
+     *
+     * <p>Bcrypt records its cost in the hash, so lowering this alone would change nothing for
+     * accounts already stored: the seeded demo hashes in demo/demo-data.sql were regenerated to
+     * match, and the two have to move together.
+     */
     @Bean
     public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder(12);
+        return new BCryptPasswordEncoder(10);
     }
 
     @Bean

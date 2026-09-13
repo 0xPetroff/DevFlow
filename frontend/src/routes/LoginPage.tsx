@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/Input';
 import { DEMO_CREDENTIALS } from '@/lib/env';
 import { applyApiError } from '@/lib/formErrors';
 import { redirectTarget } from '@/lib/redirect';
+import { prefetchDashboard } from '@/routes/routeChunks';
 
 const schema = z.object({
   identifier: z.string().trim().min(1, 'Enter your email or username'),
@@ -32,6 +33,12 @@ export function LoginPage() {
   useEffect(() => {
     acknowledgeExpiry();
   }, [acknowledgeExpiry]);
+
+  // Signing in always lands on the dashboard, so its chunk is worth fetching while the form is
+  // still being filled in rather than after the credentials come back. See prefetchDashboard.
+  useEffect(() => {
+    prefetchDashboard();
+  }, []);
 
   const {
     register,

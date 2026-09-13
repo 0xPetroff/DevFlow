@@ -114,6 +114,37 @@ drives DevFlow's own deployment API, so a release is queued, gated, and reported
 platform that owns it. Every deployment in the history carries the commit, the branch, a link
 back to the build, who or what triggered it, and how long it took.
 
+### Keeping the demo warm
+
+Render's free tier stops a service after 15 minutes without traffic, and waking it boots a JVM,
+runs Flyway and reseeds the demo data: about 55 seconds before the first page answers. Nothing
+in the application can fix that, so the answer is to not let it go idle.
+
+[keep-demo-warm.yml](.github/workflows/keep-demo-warm.yml) is the backstop. It does not ping
+once and exit, because GitHub's scheduled trigger does not keep to its cron: over one 7.5 hour
+window it started the workflow three times, with gaps of 120 and 319 minutes against the 10
+minutes asked for, and a service that sleeps after 15 minutes idle is down for nearly all of a
+gap like that. Instead a run *sustains* the ping for just under six hours, which is the runner's
+job limit, so cron only has to land once per six hours rather than once per ten. The concurrency
+group parks a single successor while a run is live, and it starts the moment that one ends.
+
+It reads `DEMO_API_URL` from Settings -> Secrets and variables -> Actions -> **Variables**. It is
+a variable, not a secret: creating it as a secret leaves `vars.DEMO_API_URL` empty, and the
+earlier version of this workflow read that empty value, took an early exit and reported success
+without sending a single request. The guard now fails loudly instead.
+
+The backstop is not the mechanism. A purpose-built external pinger is, because it is built for
+this and does not lean on CI:
+
+- **UptimeRobot** (free): add an HTTP(s) monitor on
+  `https://<your-render-service>.onrender.com/actuator/health/readiness` at a 5 minute interval.
+- **cron-job.org** (free): the same URL, every 5 minutes, with the timeout raised to 60 seconds
+  or more so a cold start is waited out rather than recorded as a failure.
+
+Either one also gives you uptime history, which the workflow does not. Note the ceiling before
+turning anything on: Render's free allowance is 750 instance-hours a month against a month of
+about 730, so one service can stay up continuously and a second free service cannot.
+
 Terraform for CloudFront and S3, ALB and ECS Fargate, and RDS in private subnets lives in
 [infrastructure/aws/terraform/](infrastructure/aws/terraform/), as composable modules with a thin
 root per environment. The demo itself runs on Render, Vercel and Neon; `render.yaml` and

@@ -38,19 +38,19 @@ DELETE FROM users WHERE id IN (
 INSERT INTO users (id, email, username, password_hash, full_name, role, avatar_color, created_at)
 VALUES
     ('00000000-0000-4000-8000-000000000001', 'demo@devflow.dev', 'demo',
-     '$2y$12$9zrpn5dbA3X9k5JyTHpXqOwnLhJY0Y/hq1qiTHDDjoAwBe3uW2WYG',
+     '$2y$10$2C5tUBHTJL/W7ir4xJ0NWO9ktCt6ZUon3fwQDe9DbNfPjG4nbBcl.',
      'Demo Admin', 'ADMIN', '#6366f1', now() - interval '90 days'),
     ('00000000-0000-4000-8000-000000000002', 'alice@devflow.dev', 'alice',
-     '$2y$12$9zrpn5dbA3X9k5JyTHpXqOwnLhJY0Y/hq1qiTHDDjoAwBe3uW2WYG',
+     '$2y$10$2C5tUBHTJL/W7ir4xJ0NWO9ktCt6ZUon3fwQDe9DbNfPjG4nbBcl.',
      'Alice Chen', 'DEVELOPER', '#0ea5e9', now() - interval '88 days'),
     ('00000000-0000-4000-8000-000000000003', 'marco@devflow.dev', 'marco',
-     '$2y$12$9zrpn5dbA3X9k5JyTHpXqOwnLhJY0Y/hq1qiTHDDjoAwBe3uW2WYG',
+     '$2y$10$2C5tUBHTJL/W7ir4xJ0NWO9ktCt6ZUon3fwQDe9DbNfPjG4nbBcl.',
      'Marco Ferreira', 'DEVELOPER', '#f59e0b', now() - interval '80 days'),
     ('00000000-0000-4000-8000-000000000004', 'priya@devflow.dev', 'priya',
-     '$2y$12$9zrpn5dbA3X9k5JyTHpXqOwnLhJY0Y/hq1qiTHDDjoAwBe3uW2WYG',
+     '$2y$10$2C5tUBHTJL/W7ir4xJ0NWO9ktCt6ZUon3fwQDe9DbNfPjG4nbBcl.',
      'Priya Nair', 'DEVELOPER', '#10b981', now() - interval '75 days'),
     ('00000000-0000-4000-8000-000000000005', 'sam@devflow.dev', 'sam',
-     '$2y$12$9zrpn5dbA3X9k5JyTHpXqOwnLhJY0Y/hq1qiTHDDjoAwBe3uW2WYG',
+     '$2y$10$2C5tUBHTJL/W7ir4xJ0NWO9ktCt6ZUon3fwQDe9DbNfPjG4nbBcl.',
      'Sam Okafor', 'VIEWER', '#ec4899', now() - interval '60 days');
 
 INSERT INTO projects (id, project_key, name, description, repository_url, status, owner_id,

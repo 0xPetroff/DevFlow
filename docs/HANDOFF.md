@@ -542,7 +542,11 @@ on GitHub, so the pipeline moved to Actions and the demo went onto free hosting.
 - **`.github/workflows/deploy.yml`** — calls `ci.yml`, then ships the API to Render through a
   deploy hook and the SPA to Vercel through the CLI, waits for readiness, smoke-tests from
   outside, and optionally records the release through `devflow-deployment.sh`.
-- **`.github/workflows/keep-demo-warm.yml`** — readiness ping every 10 minutes.
+- **`.github/workflows/keep-demo-warm.yml`** — readiness ping every 5 minutes, sustained
+  for just under six hours per run rather than one ping per scheduled trigger. GitHub's
+  cron proved unreliable enough (gaps of 120 and 319 minutes against a 10 minute cron) that
+  a ping-once workflow kept nothing warm. An external pinger is the real mechanism; see
+  "Keeping the demo warm" in the README.
 - **`render.yaml`** and **`frontend/vercel.json`**. The hosting runbook was dropped; the Neon
   and provider details are in the decision table below.
 

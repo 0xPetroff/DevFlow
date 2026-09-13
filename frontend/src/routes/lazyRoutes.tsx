@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react';
 
 import { Spinner } from '@/components/ui/Spinner';
+import { importBoardPage, importDashboardPage } from '@/routes/routeChunks';
 
 /**
  * The two heaviest routes, split out of the main bundle: the board carries the drag-and-drop
@@ -8,12 +9,10 @@ import { Spinner } from '@/components/ui/Spinner';
  * renders a login form.
  */
 const DashboardPage = lazy(() =>
-  import('@/routes/DashboardPage').then((module) => ({ default: module.DashboardPage })),
+  importDashboardPage().then((module) => ({ default: module.DashboardPage })),
 );
 
-const BoardPage = lazy(() =>
-  import('@/issues/BoardPage').then((module) => ({ default: module.BoardPage })),
-);
+const BoardPage = lazy(() => importBoardPage().then((module) => ({ default: module.BoardPage })));
 
 function RouteFallback() {
   return (
