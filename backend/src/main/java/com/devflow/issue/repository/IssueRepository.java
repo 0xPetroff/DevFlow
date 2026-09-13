@@ -35,13 +35,46 @@ public interface IssueRepository extends JpaRepository<Issue, UUID>, JpaSpecific
     @EntityGraph(attributePaths = {"project", "assignee", "creator", "labels"})
     Optional<Issue> findByProjectIdAndIssueNumber(UUID projectId, int issueNumber);
 
-    @EntityGraph(attributePaths = {"project", "assignee", "creator"})
-    List<Issue> findByProjectIdAndStatusOrderByBoardPositionAsc(UUID projectId, IssueStatus status,
-                                                                Pageable pageable);
-
     List<Issue> findByProjectIdAndStatusOrderByBoardPositionAsc(UUID projectId, IssueStatus status);
 
-    long countByProjectIdAndStatus(UUID projectId, IssueStatus status);
+    /**
+     * The board's four column totals in one round trip. Counting per status cost a query each,
+     * which on a shared-CPU instance is four times the fixed overhead to fetch four numbers.
+     */
+    @Query("""
+            select i.status as status, count(i) as total
+            from Issue i
+            where i.project.id = :projectId
+            group by i.status""")
+    List<StatusCount> countByStatusForProject(@Param("projectId") UUID projectId);
+
+    /**
+     * The ids of the cards the board shows: every column ranked by board position and cut at the
+     * same limit, in one query rather than one per column.
+     *
+     * <p>Native because the cap is per column rather than over the result, which needs a window
+     * function inside a derived table, and HQL has no from-clause subquery to put one in. It
+     * selects ids alone so that fetching the rows stays a separate query, free to join-fetch
+     * without the window function constraining what it can reach. Covered by idx_issues_board.
+     */
+    @Query(value = """
+            select ranked.id
+            from (select i.id as id,
+                         row_number() over (partition by i.status order by i.board_position asc) as rn
+                  from issues i
+                  where i.project_id = :projectId) ranked
+            where ranked.rn <= :limitPerColumn""", nativeQuery = true)
+    List<UUID> findBoardIssueIds(@Param("projectId") UUID projectId,
+                                 @Param("limitPerColumn") int limitPerColumn);
+
+    /**
+     * Labels are join-fetched here where the paginated finders leave them to @BatchSize. The
+     * difference is the pagination: this loads a fixed set of ids, so there is no limit for the
+     * collection join to be applied in memory against, and the whole board's labels arrive with
+     * the cards rather than as a batch per column.
+     */
+    @EntityGraph(attributePaths = {"project", "assignee", "creator", "labels"})
+    List<Issue> findByIdIn(Collection<UUID> ids);
 
     @Query("select max(i.boardPosition) from Issue i where i.project.id = :projectId and i.status = :status")
     Optional<Double> findLastPosition(@Param("projectId") UUID projectId, @Param("status") IssueStatus status);

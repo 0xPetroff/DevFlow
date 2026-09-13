@@ -9,6 +9,7 @@ import com.devflow.issue.dto.BoardResponse;
 import com.devflow.issue.dto.CreateIssueRequest;
 import com.devflow.issue.dto.IssueFilter;
 import com.devflow.issue.dto.IssueResponse;
+import com.devflow.issue.dto.IssueSummary;
 import com.devflow.issue.dto.MoveIssueRequest;
 import com.devflow.issue.dto.UpdateIssueRequest;
 import com.devflow.issue.entity.Issue;
@@ -26,7 +27,6 @@ import com.devflow.project.service.ProjectAccessService;
 import com.devflow.project.service.ProjectService;
 import com.devflow.user.entity.User;
 import com.devflow.user.repository.UserRepository;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -34,6 +34,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -41,6 +43,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 @Service
 @Transactional(readOnly = true)
@@ -137,18 +140,47 @@ public class IssueService {
                 .map(issueMapper::toResponse));
     }
 
+    /**
+     * Four queries, whatever the board holds. Walking the statuses and asking per column cost a
+     * count and a find each, plus a lazy label batch per column as the summaries were mapped:
+     * twelve round trips for three cards and thirteen for thirty-three, each paying the fixed
+     * per-statement overhead again. BoardQueryCountIT holds the count flat.
+     */
     public BoardResponse board(UUID projectId, int limitPerColumn) {
         Project project = projectService.requireProject(projectId);
-        Pageable cap = PageRequest.of(0, limitPerColumn);
+
+        Map<IssueStatus, Long> totals = new EnumMap<>(IssueStatus.class);
+        for (IssueStatus status : IssueStatus.values()) {
+            totals.put(status, 0L);
+        }
+        issueRepository.countByStatusForProject(projectId)
+                .forEach(row -> totals.put(row.getStatus(), row.getTotal()));
+
+        Map<IssueStatus, List<IssueSummary>> cards = cardsByStatus(projectId, limitPerColumn);
 
         List<BoardResponse.BoardColumn> columns = Arrays.stream(IssueStatus.values())
-                .map(status -> new BoardResponse.BoardColumn(status,
-                        issueRepository.countByProjectIdAndStatus(projectId, status),
-                        issueRepository.findByProjectIdAndStatusOrderByBoardPositionAsc(projectId, status, cap)
-                                .stream().map(issueMapper::toSummary).toList()))
+                .map(status -> new BoardResponse.BoardColumn(status, totals.get(status),
+                        cards.getOrDefault(status, List.of())))
                 .toList();
 
         return new BoardResponse(projectMapper.toSummary(project), columns);
+    }
+
+    /**
+     * The ids come back ranked per column but unordered as a set, and the IN clause that fetches
+     * the rows does not preserve any order of its own, so the cards are sorted here. It is the
+     * same board position the database ranked them by, over at most four capped columns.
+     */
+    private Map<IssueStatus, List<IssueSummary>> cardsByStatus(UUID projectId, int limitPerColumn) {
+        List<UUID> onBoard = issueRepository.findBoardIssueIds(projectId, limitPerColumn);
+        if (onBoard.isEmpty()) {
+            return Map.of();
+        }
+        return issueRepository.findByIdIn(onBoard).stream()
+                .sorted(Comparator.comparingDouble(Issue::getBoardPosition))
+                .collect(Collectors.groupingBy(Issue::getStatus,
+                        () -> new EnumMap<>(IssueStatus.class),
+                        Collectors.mapping(issueMapper::toSummary, Collectors.toList())));
     }
 
     @Transactional
