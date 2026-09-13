@@ -1,0 +1,147 @@
+name: Keep the demo warm
+
+# Render's free tier stops a service after 15 minutes without traffic, and a cold JVM plus
+# Flyway plus the demo reseed is most of a minute before the first page answers.
+#
+# HOW THIS WORKS, AND WHY IT IS NOT A PLAIN CRON
+#
+# The previous version asked cron for a ping every 10 minutes and trusted it. Two things were
+# measured, and both are the reason for the shape below.
+#
+# The first: DEMO_API_URL had been created as a *secret* while the step read `vars.DEMO_API_URL`.
+# Those are separate namespaces, so the variable was empty, the guard took an early exit, and the
+# job went green without sending a single request. That guard fails loudly now.
+#
+# The second, and the one that matters: GitHub's scheduled trigger is genuinely unreliable on a
+# free runner. Over one 7.5 hour window it started this workflow three times, with gaps of 120
+# and 319 minutes against the 10 minutes the cron asked for. A service that stops after 15
+# minutes idle is down for nearly all of a 319 minute gap, so a workflow that pings once and
+# exits cannot keep anything warm no matter how optimistic its cron expression is.
+#
+# So a run does not ping once. It *sustains* the ping for just under six hours, which is the
+# runner's job limit. Cron then only has to fire once per six hours rather than once per ten
+# minutes, and the worst gap actually observed (319 minutes) is comfortably inside one run.
+#
+# The concurrency group keeps the chain continuous without needing a personal access token.
+# GitHub allows one in-progress run plus one pending run per group, and cancels older pending
+# runs as newer ones queue. So a cron tick during a live run parks a single successor, which
+# starts the moment the current one ends. Self-dispatching would be the obvious alternative and
+# does not work: a workflow_dispatch sent with GITHUB_TOKEN deliberately does not start another
+# run, which is GitHub's loop guard.
+#
+# THIS IS ONLY THE BACKSTOP, and as of the cron-job.org job below it is redundant. That job
+# pings /actuator/health/readiness every 2 minutes, which is seven pings inside every 15
+# minute idle window, and it is what actually holds the service open. A purpose-built pinger
+# is the right mechanism: it is built for this, it does not lean on CI, and it keeps uptime
+# history. Delete this workflow rather than run both unless you want the belt and braces.
+#
+# Also worth knowing: GitHub disables scheduled workflows on a repository with no commits for
+# 60 days, which a finished portfolio project reaches quickly. Re-enable it from the Actions tab.
+#
+# Render's free allowance is 750 instance-hours a month and a month is about 730, so keeping a
+# single service up continuously fits, with very little room for a second free service.
+
+on:
+  schedule:
+    # Only has to land once per sustain window; every 20 minutes is margin, not the mechanism.
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+    inputs:
+      sustain_minutes:
+        description: 'How long this run keeps pinging (max 350).'
+        required: false
+        default: '350'
+
+concurrency:
+  # cancel-in-progress must stay false: cancelling the live run to start a fresh one would open
+  # exactly the idle gap this exists to close.
+  group: keep-demo-warm
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    # The runner's hard job limit is 6 hours. Staying under it means the run ends by finishing
+    # rather than by being killed, so the successor is not left waiting on a zombie.
+    timeout-minutes: 355
+    steps:
+      - name: Keep the API awake
+        env:
+          DEMO_API_URL: ${{ vars.DEMO_API_URL }}
+          SUSTAIN_MINUTES: ${{ inputs.sustain_minutes || '350' }}
+          # Comfortably inside Render's 15 minute idle timeout.
+          INTERVAL_SECONDS: '300'
+        run: |
+          set -uo pipefail
+
+          # Failing rather than exiting 0: a silent no-op here is a green tick on a workflow that
+          # is not warming anything, and the first sign of it is a visitor waiting out a cold
+          # start. An unset variable is a misconfiguration, so it is reported as one.
+          if [ -z "$DEMO_API_URL" ]; then
+            echo "::error::DEMO_API_URL repository variable is not set, so nothing was pinged."
+            echo "Set it under Settings -> Secrets and variables -> Actions -> *Variables*." >&2
+            echo "It is a variable, not a secret. A secret of the same name is not read here." >&2
+            exit 1
+          fi
+
+          # A hand-entered value above the job timeout would have the run killed part way through
+          # its window instead of finishing, so it is clamped rather than trusted.
+          case "$SUSTAIN_MINUTES" in
+            ''|*[!0-9]*) SUSTAIN_MINUTES=350 ;;
+            *) [ "$SUSTAIN_MINUTES" -gt 350 ] && SUSTAIN_MINUTES=350
+               [ "$SUSTAIN_MINUTES" -lt 1 ] && SUSTAIN_MINUTES=1 ;;
+          esac
+
+          readiness="${DEMO_API_URL%/}/actuator/health/readiness"
+          deadline=$(( $(date +%s) + SUSTAIN_MINUTES * 60 ))
+          pings=0
+          wakes=0
+          failures=0
+
+          echo "Pinging $readiness every ${INTERVAL_SECONDS}s for ${SUSTAIN_MINUTES}m."
+
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            started=$(date +%s)
+
+            # A cold start boots the JVM and runs Flyway, so the first request after an idle
+            # period is slow rather than failing. --max-time has to cover that or the ping gives
+            # up and leaves the service to stop again.
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 120 "$readiness" || echo 000)
+            elapsed=$(( $(date +%s) - started ))
+            pings=$(( pings + 1 ))
+
+            if [ "$code" = "200" ]; then
+              # Anything slow enough to have been a cold start is worth surfacing: a healthy
+              # chain should report zero of these, and a non-zero count is the signal that
+              # coverage is lapsing somewhere.
+              if [ "$elapsed" -ge 10 ]; then
+                wakes=$(( wakes + 1 ))
+                echo "ping $pings: ready after ${elapsed}s (looks like a cold start)"
+              fi
+            else
+              failures=$(( failures + 1 ))
+              echo "ping $pings: got $code after ${elapsed}s"
+            fi
+
+            # Measure the sleep from the start of the request, so a slow wake does not push the
+            # next ping past the idle timeout.
+            remaining=$(( INTERVAL_SECONDS - elapsed ))
+            [ "$remaining" -gt 0 ] && sleep "$remaining"
+          done
+
+          echo "### Keep-warm finished" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Pings | Cold starts observed | Failed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---:|---:|---:|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| $pings | $wakes | $failures |" >> "$GITHUB_STEP_SUMMARY"
+
+          # One failed ping is a blip and not worth a red tick that trains you to ignore it.
+          # A run that never once reached the service is a real outage, and is reported.
+          if [ "$failures" = "$pings" ]; then
+            echo "::error::every one of the $pings pings failed; the demo API looks down."
+            exit 1
+          fi
+
+          echo "done: $pings pings, $wakes cold starts, $failures failures"

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="DevFlow - project management and deployment tracking" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>DevFlow</title>
+    <script>
+      // Applied before first paint: resolving the theme in React instead would show a flash of
+      // the wrong one on every reload.
+      (function () {
+        try {
+          var stored = localStorage.getItem('devflow.theme');
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var dark = stored === 'dark' || ((stored === null || stored === 'system') && prefersDark);
+          document.documentElement.classList.toggle('dark', dark);
+          document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+        } catch (e) {
+          /* private mode: fall back to the dark default already on the element */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

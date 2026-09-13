@@ -1,0 +1,13 @@
+# Layered on top of another profile for the public demo: SPRING_PROFILES_ACTIVE=prod,demo
+# Locally, SPRING_PROFILES_ACTIVE=dev,demo.
+#
+# The profile carries no configuration of its own. Its only effect is to activate
+# DemoDataLoader, which restores demo/demo-data.sql on every start, so the demo instance is
+# otherwise configured exactly like the profile underneath it.
+#
+# The seed creates an administrator whose password is published in the README. Never activate
+# this on an installation holding real data.
+spring:
+  config:
+    activate:
+      on-profile: demo

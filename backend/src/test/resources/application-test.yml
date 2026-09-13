@@ -1,0 +1,22 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    locations: classpath:db/migration
+
+devflow:
+  jwt:
+    secret: dGVzdC1vbmx5LXNpZ25pbmcta2V5LXRoYXQtaXMtbG9uZy1lbm91Z2gtZm9yLWhzMjU2
+    access-token-minutes: 15
+    refresh-token-days: 7
+    issuer: devflow-test
+  cors:
+    allowed-origins: http://localhost:5173
+
+logging:
+  level:
+    root: WARN
+    com.devflow: INFO
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN

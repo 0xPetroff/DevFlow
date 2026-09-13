@@ -1,0 +1,22 @@
+# Demo data is no longer a Flyway location: add the demo profile for it,
+# SPRING_PROFILES_ACTIVE=dev,demo.
+spring:
+  jpa:
+    properties:
+      hibernate:
+        format_sql: true
+
+devflow:
+  jwt:
+    secret: ${DEVFLOW_JWT_SECRET:ZGV2LW9ubHktc2VjcmV0LW5vdC1mb3ItcHJvZHVjdGlvbi11c2UtMzJi}
+
+logging:
+  level:
+    com.devflow: DEBUG
+    org.springframework.security: DEBUG
+    org.hibernate.SQL: DEBUG
+
+management:
+  endpoint:
+    health:
+      show-details: always
